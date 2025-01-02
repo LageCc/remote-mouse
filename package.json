@@ -1,0 +1,47 @@
+{
+    "name": "remote-mouse-control",
+    "version": "1.0.0",
+    "description": "远程鼠标控制软件",
+    "main": "index.js",
+    "bin": {
+        "remote-mouse-control": "./index.js"
+    },
+    "scripts": {
+        "install": "node-gyp rebuild",
+        "build:native": "node build.js",
+        "start": "node server.js",
+        "pkg": "npm run build:native && pkg . --out-path dist --public"
+    },
+    "dependencies": {
+        "node-addon-api": "^5.0.0",
+        "selfsigned": "^2.4.1",
+        "ws": "^8.13.0"
+    },
+    "devDependencies": {
+        "pkg": "^5.8.1"
+    },
+    "gypfile": true,
+    "pkg": {
+        "assets": [
+            "index.html",
+            "build/**/*",
+            "mouse_control.node",
+            "build/Release/mouse_control.node"
+        ],
+        "targets": [
+            "node16-win-x64",
+            "node16-macos-arm64",
+            "node16-linux-x64"
+        ],
+        "outputPath": "dist",
+        "compress": "GZip",
+        "options": {
+            "v8-cache": true,
+            "public": true
+        },
+        "scripts": [
+            "index.js",
+            "server.js"
+        ]
+    }
+}

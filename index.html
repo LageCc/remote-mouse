@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>远程鼠标控制</title>
+    <style>
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .control-panel {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f0f0f0;
+            border-radius: 5px;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        /* 视频容器样式 */
+        .video-container {
+            position: relative;
+            width: 800px;
+            height: 600px;
+            margin: 20px auto;
+        }
+
+        #screenVideo {
+            width: 100%;
+            height: 100%;
+            background: #000;
+            object-fit: contain;
+        }
+
+        /* 控制层样式 */
+        .control-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            cursor: crosshair;
+            z-index: 10;
+        }
+
+        #mousepad {
+            width: 100%;
+            height: 100%;
+            border: none;
+            margin: 0;
+            position: absolute;
+            user-select: none;
+            background: transparent;
+            touch-action: none;
+        }
+
+        #cursor {
+            width: 10px;
+            height: 10px;
+            background: red;
+            position: absolute;
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 11;
+        }
+
+        #clickBtn {
+            padding: 10px 20px;
+            margin: 10px 20px;
+            cursor: pointer;
+        }
+
+        #status {
+            margin: 20px;
+            color: #666;
+        }
+
+        .instructions {
+            padding: 15px;
+            background: #e9e9e9;
+            border-radius: 5px;
+        }
+
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            background: #f0f0f0;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+
+        .status-online {
+            background: #4CAF50;
+        }
+
+        .status-offline {
+            background: #f44336;
+        }
+
+        .connection-info {
+            font-size: 0.9em;
+            color: #666;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="status-bar">
+            <div>
+                <span class="status-indicator" id="connectionIndicator"></span>
+                <span id="connectionStatus">未连接</span>
+            </div>
+            <div class="connection-info">
+                在线人数: <span id="onlineCount">0</span> |
+                控制状态: <span id="controlStatus">无人控制</span>
+            </div>
+        </div>
+
+        <div class="control-panel" id="sharingPanel">
+            <h3>共享控制</h3>
+            <button id="startSharingBtn">开始共享</button>
+            <button id="stopSharingBtn" class="hidden">停止共享</button>
+            <div id="passwordDisplay" class="hidden">
+                共享密码：<span id="password"></span>
+            </div>
+            <div class="video-container hidden" id="controlArea">
+                <video id="screenVideo" autoplay></video>
+                <div class="control-layer">
+                    <div id="mousepad">
+                        <div id="cursor"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="control-panel" id="connectPanel">
+            <h3>远程连接</h3>
+            <input type="text" id="passwordInput" placeholder="请输入共享密码">
+            <button id="connectBtn">连接</button>
+        </div>
+
+        <div class="instructions">
+            <h3>使用说明：</h3>
+            <p>1. 共享方点击"开始共享"获取密码</p>
+            <p>2. 控制方输入密码连接</p>
+            <p>3. 在灰色区域内移动鼠标来控制远程电脑的鼠标位置</p>
+            <p>4. 点击"点击"按钮来模拟鼠标点击</p>
+        </div>
+        <button id="clickBtn" class="hidden">点击</button>
+        <div id="status">未连接</div>
+    </div>
+
+    <script>
+        // 获取当前页面的主机地址
+        const wsHost = window.location.hostname;
+        const wsPort = '8080';
+        const wsUrl = `ws://${wsHost}:${wsPort}`;
+
+        let ws;
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT_ATTEMPTS = 5;
+        let isSharing = false;
+        let isController = false;
+        let screenStream = null;
+        let peerConnection = null;
+        let clientId = null;
+        let heartbeatInterval = null;
+        let dataChannel = null;
+
+        // 更新连接状态UI
+        function updateConnectionStatus(status, isOnline = true) {
+            const indicator = document.getElementById('connectionIndicator');
+            const statusText = document.getElementById('connectionStatus');
+
+            indicator.className = 'status-indicator ' +
+                (isOnline ? 'status-online' : 'status-offline');
+            statusText.textContent = status;
+        }
+
+        // 更新系统状态
+        function updateSystemStatus(data) {
+            document.getElementById('onlineCount').textContent = data.connectedClients;
+            document.getElementById('controlStatus').textContent =
+                data.hasController ? '已被控制' : '无人控制';
+        }
+
+        // 开始心跳检测
+        function startHeartbeat() {
+            if (heartbeatInterval) {
+                clearInterval(heartbeatInterval);
+            }
+
+            heartbeatInterval = setInterval(() => {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'ping' }));
+                }
+            }, 30000); // 每30秒发送一次心跳
+        }
+
+        // 停止心跳检测
+        function stopHeartbeat() {
+            if (heartbeatInterval) {
+                clearInterval(heartbeatInterval);
+                heartbeatInterval = null;
+            }
+        }
+
+        // 创建WebRTC连接
+        async function createPeerConnection(isController = false) {
+            const configuration = {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' }
+                ]
+            };
+
+            console.log('创建WebRTC连接:', { isController });
+            peerConnection = new RTCPeerConnection(configuration);
+
+            // 添加连接状态监听
+            peerConnection.onconnectionstatechange = () => {
+                console.log('WebRTC连接状态:', peerConnection.connectionState);
+            };
+
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log('ICE连接状态:', peerConnection.iceConnectionState);
+            };
+
+            // 添加屏幕流
+            if (screenStream && !isController) {
+                console.log('添加屏幕流到连接');
+                screenStream.getTracks().forEach(track => {
+                    console.log('添加轨道:', track.kind, track.label);
+                    peerConnection.addTrack(track, screenStream);
+                });
+            }
+
+            // 处理ICE候选
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    console.log('发送ICE候选:', event.candidate);
+                    ws.send(JSON.stringify({
+                        type: 'webrtc',
+                        to: isController ? sharingClientId : controllingClientId,
+                        signal: {
+                            type: 'ice-candidate',
+                            candidate: event.candidate
+                        }
+                    }));
+                }
+            };
+
+            // 处理远程流
+            peerConnection.ontrack = (event) => {
+                console.log('收到远程流:', event.streams);
+                if (isController) {
+                    const video = document.getElementById('screenVideo');
+                    video.srcObject = event.streams[0];
+                    video.play().catch(err => {
+                        console.error('播放视频失败:', err);
+                        document.addEventListener('click', () => {
+                            video.play().catch(console.error);
+                        }, { once: true });
+                    });
+                }
+            };
+
+            return peerConnection;
+        }
+
+        // 设置数据通道
+        function setupDataChannel(channel) {
+            channel.onopen = () => {
+                console.log('数据通道已打开');
+            };
+
+            channel.onclose = () => {
+                console.log('数据通道已关闭');
+            };
+
+            channel.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'mouseMove') {
+                    // 处理鼠标移动
+                    handleRemoteMouseMove(data.x, data.y);
+                } else if (data.type === 'mouseClick') {
+                    // 处理鼠标点击
+                    handleRemoteMouseClick();
+                }
+            };
+        }
+
+        // 处理WebRTC信令
+        async function handleWebRTCSignaling(data) {
+            const signal = data.signal;
+            const isController = !isSharing;
+
+            console.log('收到WebRTC信令:', { signal, isController });
+
+            switch (signal.type) {
+                case 'offer':
+                    if (!peerConnection) {
+                        await createPeerConnection(isController);
+                    }
+                    console.log('设置远程描述:', signal.offer);
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(signal.offer));
+                    console.log('创建应答...');
+                    const answer = await peerConnection.createAnswer();
+                    console.log('设置本地描述:', answer);
+                    await peerConnection.setLocalDescription(answer);
+                    ws.send(JSON.stringify({
+                        type: 'webrtc',
+                        to: data.from,
+                        signal: {
+                            type: 'answer',
+                            answer: answer
+                        }
+                    }));
+                    break;
+
+                case 'answer':
+                    console.log('收到应答:', signal.answer);
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(signal.answer));
+                    break;
+
+                case 'ice-candidate':
+                    console.log('收到ICE候选:', signal.candidate);
+                    if (peerConnection) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(signal.candidate));
+                    }
+                    break;
+            }
+        }
+
+        // 更新UI状态
+        function updateUIState() {
+            const startBtn = document.getElementById('startSharingBtn');
+            const stopBtn = document.getElementById('stopSharingBtn');
+            const passwordDisplay = document.getElementById('passwordDisplay');
+            const password = document.getElementById('password');
+            const controlArea = document.getElementById('controlArea');
+            const clickBtn = document.getElementById('clickBtn');
+
+            console.log('更新UI状态:', { isSharing, isController });
+
+            if (isSharing) {
+                startBtn.classList.add('hidden');
+                stopBtn.classList.remove('hidden');
+                passwordDisplay.classList.remove('hidden');
+                controlArea.classList.add('hidden');
+                clickBtn.classList.add('hidden');
+                console.log('密码显示状态:', {
+                    passwordDisplayHidden: passwordDisplay.classList.contains('hidden'),
+                    passwordText: password.textContent
+                });
+            } else {
+                startBtn.classList.remove('hidden');
+                stopBtn.classList.add('hidden');
+                passwordDisplay.classList.add('hidden');
+                controlArea.classList.add('hidden');
+                clickBtn.classList.add('hidden');
+                password.textContent = '';
+            }
+
+            if (isController) {
+                controlArea.classList.remove('hidden');
+                clickBtn.classList.remove('hidden');
+            }
+        }
+
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.hostname}:8080`);
+
+            ws.onopen = () => {
+                updateConnectionStatus('已连接');
+                reconnectAttempts = 0;
+                updateUIState();
+                startHeartbeat();
+                console.log('已连接到服务器:', wsUrl);
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                console.log('收到消息:', data);
+                switch (data.type) {
+                    case 'webrtc':
+                        handleWebRTCSignaling(data);
+                        break;
+                    case 'connected':
+                        clientId = data.clientId;
+                        if (data.isSharing && data.sharePassword) {
+                            isSharing = true;
+                            document.getElementById('password').textContent = data.sharePassword;
+                            updateUIState();
+                        }
+                        break;
+                    case 'systemStatus':
+                        updateSystemStatus(data);
+                        break;
+                    case 'pong':
+                        // 心跳响应，可以在这里添加延迟检测
+                        break;
+                    case 'sharingStarted':
+                        console.log('收到共享开始消息:', data);
+                        isSharing = true;
+                        isController = false;
+                        // 如果已经有WebRTC连接，关闭它
+                        if (peerConnection) {
+                            peerConnection.close();
+                            peerConnection = null;
+                        }
+                        document.body.classList.add('sharing');
+                        const passwordElement = document.getElementById('password');
+                        if (passwordElement && data.password) {
+                            console.log('设置密码:', data.password);
+                            passwordElement.textContent = data.password;
+                            document.getElementById('passwordDisplay').classList.remove('hidden');
+                        } else {
+                            console.error('密码元素不存在或密码未收到');
+                        }
+                        status.textContent = '共享已开启';
+                        updateUIState();
+                        break;
+                    case 'sharingStopped':
+                        isSharing = false;
+                        isController = false;
+                        document.body.classList.remove('sharing');
+                        status.textContent = '共享已停止';
+                        updateUIState();
+                        break;
+                    case 'authenticated':
+                        isController = true;
+                        sharingClientId = data.sharingClientId; // 保存共享端ID
+                        // 控制端认证成功后，创建WebRTC连接并发送offer
+                        if (!peerConnection) {
+                            createPeerConnection(true).then(async pc => {
+                                console.log('创建offer...');
+                                const offer = await pc.createOffer({
+                                    offerToReceiveVideo: true,
+                                    offerToReceiveAudio: false
+                                });
+                                console.log('设置本地描述:', offer);
+                                await pc.setLocalDescription(offer);
+                                ws.send(JSON.stringify({
+                                    type: 'webrtc',
+                                    to: data.sharingClientId,
+                                    signal: {
+                                        type: 'offer',
+                                        offer: offer
+                                    }
+                                }));
+                            }).catch(err => {
+                                console.error('创建WebRTC连接失败:', err);
+                                status.textContent = '创建WebRTC连接失败';
+                            });
+                        }
+                        status.textContent = '已连接并认证';
+                        updateUIState();
+                        break;
+                    case 'sharingStatusChanged':
+                        if (!data.isSharing) {
+                            isSharing = false;
+                            isController = false;
+                            status.textContent = '共享已结束';
+                            updateUIState();
+                        }
+                        break;
+                    case 'error':
+                        status.textContent = data.message;
+                        console.error('错误:', data.message);
+                        updateUIState();
+                        break;
+                }
+            };
+
+            ws.onclose = () => {
+                isSharing = false;
+                isController = false;
+                stopScreenShare();
+                updateConnectionStatus('已断开连接', false);
+                stopHeartbeat();
+                updateUIState();
+                if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    reconnectAttempts++;
+                    updateConnectionStatus(`重新连接中... (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+                    setTimeout(connect, 2000);
+                } else {
+                    updateConnectionStatus('连接失败，请刷新页面重试', false);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket错误:', error);
+                updateConnectionStatus('连接错误', false);
+                updateUIState();
+            };
+        }
+
+        connect();
+
+        document.getElementById('startSharingBtn').addEventListener('click', () => {
+            startScreenShare();
+        });
+
+        document.getElementById('stopSharingBtn').addEventListener('click', () => {
+            stopScreenShare();
+            ws.send(JSON.stringify({ type: 'stopSharing' }));
+        });
+
+        document.getElementById('connectBtn').addEventListener('click', () => {
+            const password = document.getElementById('passwordInput').value;
+            ws.send(JSON.stringify({
+                type: 'authenticate',
+                password: password
+            }));
+        });
+
+        const mousepad = document.getElementById('mousepad');
+        const cursor = document.getElementById('cursor');
+        const clickBtn = document.getElementById('clickBtn');
+        const status = document.getElementById('status');
+
+        // 处理鼠标/触摸移动
+        function handlePointerMove(x, y) {
+            const rect = mousepad.getBoundingClientRect();
+            const normalizedX = Math.round((x - rect.left) / rect.width * 1920);
+            const normalizedY = Math.round((y - rect.top) / rect.height * 1080);
+
+            cursor.style.left = `${x - rect.left}px`;
+            cursor.style.top = `${y - rect.top}px`;
+
+            if (dataChannel && dataChannel.readyState === 'open') {
+                dataChannel.send(JSON.stringify({
+                    type: 'mouseMove',
+                    x: normalizedX,
+                    y: normalizedY
+                }));
+            } else if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'move',
+                    x: normalizedX,
+                    y: normalizedY
+                }));
+            }
+        }
+
+        // 处理点击/触摸点击
+        function handleClick() {
+            if (dataChannel && dataChannel.readyState === 'open') {
+                dataChannel.send(JSON.stringify({
+                    type: 'mouseClick'
+                }));
+            } else if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'click'
+                }));
+            }
+        }
+
+        // 触摸事件处理
+        let touchStartTime = 0;
+        let lastTouchEnd = 0;
+        let isTouching = false;
+
+        mousepad.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            isTouching = true;
+            touchStartTime = Date.now();
+            const touch = e.touches[0];
+            handlePointerMove(touch.clientX, touch.clientY);
+        }, { passive: false });
+
+        mousepad.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            if (!isTouching) return;
+            const touch = e.touches[0];
+            handlePointerMove(touch.clientX, touch.clientY);
+        }, { passive: false });
+
+        mousepad.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            isTouching = false;
+            const touchDuration = Date.now() - touchStartTime;
+            const timeSinceLastTouch = Date.now() - lastTouchEnd;
+
+            // 检测点击（短触摸）或双击（两次快速触摸）
+            if (touchDuration < 200) { // 短触摸视为点击
+                handleClick();
+            }
+
+            lastTouchEnd = Date.now();
+        }, { passive: false });
+
+        mousepad.addEventListener('mousemove', (e) => {
+            if (isTouching) return; // 如果正在触摸，忽略鼠标移动
+            handlePointerMove(e.clientX, e.clientY);
+        });
+
+        clickBtn.addEventListener('click', () => {
+            handleClick();
+        });
+
+        // 开始屏幕共享
+        async function startScreenShare() {
+            try {
+                screenStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: {
+                        cursor: "always"
+                    },
+                    audio: false
+                });
+                const video = document.getElementById('screenVideo');
+                video.srcObject = screenStream;
+
+                // 添加错误处理
+                screenStream.oninactive = () => {
+                    console.log('屏幕共享已停止');
+                    stopScreenShare();
+                };
+
+                video.onerror = (error) => {
+                    console.error('视频错误:', error);
+                    stopScreenShare();
+                };
+
+                console.log('屏幕共享已启动，发送开始共享消息');
+
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'startSharing'
+                    }));
+                }
+
+                // 监听屏幕共享停止
+                screenStream.getVideoTracks()[0].onended = () => {
+                    stopScreenShare();
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'stopSharing' }));
+                    }
+                };
+
+                return true;
+            } catch (err) {
+                console.error('获取屏幕流失败:', err);
+                alert('获取屏幕流失败: ' + err.message + '\n请确保使用HTTPS访问，并授予屏幕共享权限。');
+            }
+        }
+
+        // 停止屏幕共享
+        function stopScreenShare() {
+            if (screenStream) {
+                screenStream.getTracks().forEach(track => track.stop());
+                screenStream = null;
+                const video = document.getElementById('screenVideo');
+                video.srcObject = null;
+            }
+        }
+
+        window.addEventListener('beforeunload', () => {
+            stopHeartbeat();
+            if (ws) {
+                ws.close();
+            }
+        });
+
+        // 添加鼠标区域的样式
+        const style = document.createElement('style');
+        style.textContent = `
+            #mousepad {
+                position: relative;
+                border: 2px solid #ccc;
+                background: rgba(245, 245, 245, 0.8);
+                margin: 20px auto;
+                cursor: crosshair;
+            }
+
+            #cursor {
+                width: 16px;
+                height: 16px;
+                background: red;
+                border-radius: 50%;
+                position: absolute;
+                transform: translate(-50%, -50%);
+                pointer-events: none;
+                z-index: 1000;
+            }
+
+            .sharing #mousepad {
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                z-index: 100;
+                background: transparent;
+                border: none;
+            }
+
+            .sharing #cursor {
+                background: rgba(255, 0, 0, 0.5);
+                border: 2px solid red;
+            }
+        `;
+        document.head.appendChild(style);
+
+        // 在视频加载完成后调整鼠标区域大小
+        const screenVideo = document.getElementById('screenVideo');
+        screenVideo.addEventListener('loadedmetadata', () => {
+            const mousepad = document.getElementById('mousepad');
+            mousepad.style.width = screenVideo.offsetWidth + 'px';
+            mousepad.style.height = screenVideo.offsetHeight + 'px';
+        });
+
+        // 监听窗口大小变化
+        window.addEventListener('resize', () => {
+            if (isSharing) {
+                const mousepad = document.getElementById('mousepad');
+                mousepad.style.width = screenVideo.offsetWidth + 'px';
+                mousepad.style.height = screenVideo.offsetHeight + 'px';
+            }
+        });
+    </script>
+</body>
+
+</html>
