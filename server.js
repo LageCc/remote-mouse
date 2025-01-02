@@ -60,25 +60,26 @@ console.log('可执行文件目录:', exeDir);
 
 // 获取native模块的搜索路径
 function getNativeModulePaths() {
-    const isWin = platform === 'win32';
     const paths = [
+        path.join('./mouse_control.node'),
         // 直接在可执行文件目录下查找
         path.join(exeDir, 'mouse_control.node'),
         // 在build/Release目录下查找
         path.join(exeDir, 'build', 'Release', 'mouse_control.node'),
         // 在平台特定目录下查找
-        path.join(exeDir, 'build', isWin ? 'Release' : `${platform}-${arch}`, 'mouse_control.node'),
+        path.join(exeDir, 'build', `${platform}-${arch}`, 'mouse_control.node'),
         // 在当前工作目录下查找
         path.join(process.cwd(), 'mouse_control.node'),
         // 在上级目录的build目录下查找
         path.join(exeDir, '..', 'build', 'Release', 'mouse_control.node')
     ];
 
-    if (isWin) {
-        // Windows特定路径
+    // 添加所有可能的架构路径
+    const possibleArchs = ['x64', 'x86', 'arm64'];
+    for (const arch of possibleArchs) {
         paths.push(
-            path.join(exeDir, '..', 'mouse_control.node'),
-            path.join(process.cwd(), 'build', 'Release', 'mouse_control.node')
+            path.join(exeDir, 'build', `${platform}-${arch}`, 'mouse_control.node'),
+            path.join(process.cwd(), 'build', `${platform}-${arch}`, 'mouse_control.node')
         );
     }
 

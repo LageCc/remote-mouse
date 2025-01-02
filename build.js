@@ -6,6 +6,62 @@ const os = require('os');
 const platform = process.platform;
 const arch = process.arch;
 
+// 定义支持的架构
+const SUPPORTED_ARCHS = {
+    win32: ['x64', 'x86', 'arm64'],
+    darwin: ['x64', 'arm64'],
+    linux: ['x64', 'arm64']
+};
+
+// 获取当前平台支持的所有架构
+function getSupportedArchs() {
+    return SUPPORTED_ARCHS[platform] || ['x64'];
+}
+
+// 为指定架构编译native模块
+async function buildForArch(targetArch) {
+    console.log(`正在为 ${platform}-${targetArch} 编译native模块...`);
+    try {
+        const env = { ...process.env };
+        if (platform === 'win32') {
+            // Windows特殊处理
+            switch (targetArch) {
+                case 'x86':
+                    env.npm_config_arch = 'ia32';
+                    break;
+                case 'arm64':
+                    env.npm_config_arch = 'arm64';
+                    break;
+                default:
+                    env.npm_config_arch = 'x64';
+            }
+        } else {
+            env.npm_config_arch = targetArch;
+        }
+
+        execSync('node-gyp rebuild', {
+            stdio: 'inherit',
+            env: env
+        });
+
+        // 复制编译后的模块到对应架构的目录
+        const archDir = path.join(__dirname, 'build', `${platform}-${targetArch}`);
+        if (!fs.existsSync(archDir)) {
+            fs.mkdirSync(archDir, { recursive: true });
+        }
+
+        const sourceFile = path.join(buildDir, 'mouse_control.node');
+        const targetFile = path.join(archDir, 'mouse_control.node');
+
+        fs.copyFileSync(sourceFile, targetFile);
+        console.log(`已复制模块到 ${targetFile}`);
+    } catch (err) {
+        console.error(`编译 ${platform}-${targetArch} 失败:`, err);
+        return false;
+    }
+    return true;
+}
+
 // 检查文件是否存在
 function checkFile(filePath) {
     try {
@@ -64,12 +120,28 @@ try {
 
 // 编译native模块
 console.log('编译native模块...');
-try {
-    execSync('node-gyp rebuild', { stdio: 'inherit' });
-} catch (err) {
-    console.error('编译native模块失败:', err);
-    process.exit(1);
+async function buildAllArchs() {
+    const archs = getSupportedArchs();
+    let buildSuccess = true;
+
+    for (const targetArch of archs) {
+        if (!await buildForArch(targetArch)) {
+            buildSuccess = false;
+            console.error(`为 ${platform}-${targetArch} 构建失败`);
+        }
+    }
+
+    if (!buildSuccess) {
+        process.exit(1);
+    }
 }
+
+buildAllArchs().then(() => {
+    console.log('所有架构构建完成');
+}).catch(err => {
+    console.error('构建过程中出现错误:', err);
+    process.exit(1);
+});
 
 // 复制native模块到dist目录
 console.log('复制文件到dist目录...');
