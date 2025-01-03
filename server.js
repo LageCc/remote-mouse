@@ -6,6 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
 const selfsigned = require('selfsigned');
+const StunTurnServer = require('./stun-server');
 
 // 获取正确的资源路径
 function getAssetPath(relativePath) {
@@ -507,4 +508,28 @@ process.on('SIGTERM', () => {
         console.log('服务器正常关闭');
         process.exit(0);
     });
+});
+
+// 创建STUN/TURN服务器实例
+const stunServer = new StunTurnServer({
+    port: 3478,
+    host: '0.0.0.0',
+    username: 'remote-mouse',
+    credential: 'remote-mouse-control'
+});
+
+// 启动STUN服务器
+let stunUrl;
+let turnConfig;
+stunServer.start().then(url => {
+    stunUrl = url.stunUrl;
+    turnConfig = {
+        urls: url.turnUrl,
+        username: url.username,
+        credential: url.credential
+    };
+    console.log('STUN服务器URL:', stunUrl);
+    console.log('TURN服务器配置:', turnConfig);
+}).catch(err => {
+    console.error('STUN/TURN服务器启动失败:', err);
 }); 

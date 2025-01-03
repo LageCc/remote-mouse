@@ -15,6 +15,7 @@
     "dependencies": {
         "node-addon-api": "^5.0.0",
         "selfsigned": "^2.4.1",
+        "node-turn": "^0.0.6",
         "ws": "^8.13.0"
     },
     "devDependencies": {

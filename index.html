@@ -28,13 +28,17 @@
             width: 800px;
             height: 600px;
             margin: 20px auto;
+            background: #000;
+            overflow: hidden;
         }
 
         #screenVideo {
             width: 100%;
             height: 100%;
-            background: #000;
             object-fit: contain;
+            display: block;
+            transform: translateZ(0);
+            /* 启用硬件加速 */
         }
 
         /* 控制层样式 */
@@ -180,6 +184,8 @@
         let screenStream = null;
         let peerConnection = null;
         let clientId = null;
+        let controllingClientId = null;
+        let sharingClientId = null;
         let heartbeatInterval = null;
         let dataChannel = null;
 
@@ -221,24 +227,118 @@
             }
         }
 
+        // 重新协商连接函数
+        async function renegotiateConnection() {
+            if (!peerConnection) return;
+
+            try {
+                const offer = await peerConnection.createOffer({
+                    offerToReceiveVideo: true,
+                    offerToReceiveAudio: false
+                });
+                await peerConnection.setLocalDescription(offer);
+
+                ws.send(JSON.stringify({
+                    type: 'webrtc',
+                    to: isController ? sharingClientId : controllingClientId,
+                    signal: {
+                        type: 'offer',
+                        offer: offer
+                    }
+                }));
+            } catch (err) {
+                console.error('重新协商失败:', err);
+            }
+        }
+
         // 创建WebRTC连接
         async function createPeerConnection(isController = false) {
+            const localIp = window.location.hostname;
             const configuration = {
                 iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' }
-                ]
+                    {
+                        urls: `stun:${localIp}:3478`,
+                        username: 'remote-mouse',
+                        credential: 'remote-mouse-control'
+                    },
+                    {
+                        urls: `turn:${localIp}:3478`,
+                        username: 'remote-mouse',
+                        credential: 'remote-mouse-control'
+                    }
+                ],
+                iceTransportPolicy: 'all',
+                iceCandidatePoolSize: 10,
+                bundlePolicy: 'max-bundle'
             };
 
-            console.log('创建WebRTC连接:', { isController });
+            console.log('创建WebRTC连接:', { isController, configuration });
             peerConnection = new RTCPeerConnection(configuration);
+
+            // 添加协商需要的处理
+            peerConnection.onnegotiationneeded = async () => {
+                try {
+                    if (isController) {
+                        const offer = await peerConnection.createOffer({
+                            offerToReceiveVideo: true,
+                            offerToReceiveAudio: false
+                        });
+                        await peerConnection.setLocalDescription(offer);
+                        ws.send(JSON.stringify({
+                            type: 'webrtc',
+                            to: sharingClientId,
+                            signal: {
+                                type: 'offer',
+                                offer: offer
+                            }
+                        }));
+                    }
+                } catch (err) {
+                    console.error('协商失败:', err);
+                }
+            };
+
+            // 添加ICE候选处理
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    console.log('发送ICE候选:', event.candidate);
+                    const targetId = isController ? sharingClientId : controllingClientId;
+                    if (targetId) {  // 只在有目标ID时发送
+                        ws.send(JSON.stringify({
+                            to: targetId,
+                            type: 'webrtc',
+                            signal: {
+                                type: 'ice-candidate',
+                                candidate: event.candidate
+                            }
+                        }));
+                    } else {
+                        console.warn('没有目标ID，无法发送ICE候选');
+                    }
+                }
+            };
 
             // 添加连接状态监听
             peerConnection.onconnectionstatechange = () => {
                 console.log('WebRTC连接状态:', peerConnection.connectionState);
+                if (peerConnection.connectionState === 'failed') {
+                    console.error('连接失败，尝试重新连接...');
+                    renegotiateConnection();
+                }
             };
 
             peerConnection.oniceconnectionstatechange = () => {
                 console.log('ICE连接状态:', peerConnection.iceConnectionState);
+                if (peerConnection.iceConnectionState === 'failed') {
+                    console.error('ICE连接失败，尝试重新协商...');
+                    if (isController) {
+                        renegotiateConnection();
+                    }
+                }
+            };
+
+            peerConnection.onicegatheringstatechange = () => {
+                console.log('ICE收集状态:', peerConnection.iceGatheringState);
             };
 
             // 添加屏幕流
@@ -246,36 +346,105 @@
                 console.log('添加屏幕流到连接');
                 screenStream.getTracks().forEach(track => {
                     console.log('添加轨道:', track.kind, track.label);
-                    peerConnection.addTrack(track, screenStream);
+                    const sender = peerConnection.addTrack(track, screenStream);
+                    console.log('已添加轨道:', sender);
                 });
             }
-
-            // 处理ICE候选
-            peerConnection.onicecandidate = event => {
-                if (event.candidate) {
-                    console.log('发送ICE候选:', event.candidate);
-                    ws.send(JSON.stringify({
-                        type: 'webrtc',
-                        to: isController ? sharingClientId : controllingClientId,
-                        signal: {
-                            type: 'ice-candidate',
-                            candidate: event.candidate
-                        }
-                    }));
-                }
-            };
 
             // 处理远程流
             peerConnection.ontrack = (event) => {
                 console.log('收到远程流:', event.streams);
                 if (isController) {
                     const video = document.getElementById('screenVideo');
+
+                    // 确保视频元素正确配置
+                    video.autoplay = true;
+                    video.playsInline = true;
+                    video.style.display = 'block';
+
+                    // 设置视频约束
+                    video.setAttribute('playsinline', '');
+                    video.setAttribute('autoplay', '');
+                    video.setAttribute('muted', '');
+
+                    // 停止任何现有的流
+                    if (video.srcObject) {
+                        const tracks = video.srcObject.getTracks();
+                        tracks.forEach(track => track.stop());
+                    }
+
+                    // 确保视频容器可见
+                    const videoContainer = video.parentElement;
+                    videoContainer.style.display = 'block';
+
                     video.srcObject = event.streams[0];
-                    video.play().catch(err => {
-                        console.error('播放视频失败:', err);
-                        document.addEventListener('click', () => {
-                            video.play().catch(console.error);
-                        }, { once: true });
+
+                    // 监听视频状态
+                    video.onloadedmetadata = () => {
+                        console.log('视频元数据已加载');
+                        console.log('视频尺寸:', video.videoWidth, 'x', video.videoHeight);
+                        video.style.width = '100%';
+                        video.style.height = '100%';
+
+                        // 尝试自动播放
+                        const playPromise = video.play();
+                        if (playPromise !== undefined) {
+                            playPromise.catch(err => {
+                                console.error('自动播放失败:', err);
+                                // 强制播放
+                                video.muted = true;
+                                video.play().catch(err2 => {
+                                    console.error('强制播放失败:', err2);
+                                    // 添加点击播放按钮
+                                    const playButton = document.createElement('button');
+                                    playButton.textContent = '点击开始播放';
+                                    playButton.style.position = 'absolute';
+                                    playButton.style.top = '50%';
+                                    playButton.style.left = '50%';
+                                    playButton.style.transform = 'translate(-50%, -50%)';
+                                    playButton.style.zIndex = '1000';
+                                    videoContainer.appendChild(playButton);
+
+                                    playButton.onclick = () => {
+                                        video.play();
+                                        playButton.remove();
+                                    };
+                                });
+                            });
+                        }
+                    };
+
+                    // 添加视频容器样式
+                    const style = document.createElement('style');
+                    style.textContent = `
+                        .video-container {
+                            background: #000 !important;
+                            position: relative !important;
+                            overflow: hidden !important;
+                        }
+                        #screenVideo {
+                            position: absolute !important;
+                            object-fit: contain !important;
+                        }
+                    `;
+                    document.head.appendChild(style);
+
+                    // 监听所有轨道的状态
+                    event.streams[0].getTracks().forEach(track => {
+                        console.log('轨道信息:', {
+                            kind: track.kind,
+                            enabled: track.enabled,
+                            readyState: track.readyState,
+                            settings: track.getSettings()
+                        });
+
+                        track.onended = () => console.log('轨道结束:', track.kind);
+                        track.onmute = () => {
+                            console.log('轨道静音:', track.kind);
+                            track.enabled = true;  // 尝试重新启用
+                        };
+                        track.onunmute = () => console.log('轨道取消静音:', track.kind);
+                        track.enabled = true;
                     });
                 }
             };
@@ -310,6 +479,15 @@
             const signal = data.signal;
             const isController = !isSharing;
 
+            // 更新对方的ID
+            if (data.from) {
+                if (isController) {
+                    sharingClientId = data.from;
+                } else {
+                    controllingClientId = data.from;
+                }
+            }
+
             console.log('收到WebRTC信令:', { signal, isController });
 
             switch (signal.type) {
@@ -317,11 +495,8 @@
                     if (!peerConnection) {
                         await createPeerConnection(isController);
                     }
-                    console.log('设置远程描述:', signal.offer);
                     await peerConnection.setRemoteDescription(new RTCSessionDescription(signal.offer));
-                    console.log('创建应答...');
                     const answer = await peerConnection.createAnswer();
-                    console.log('设置本地描述:', answer);
                     await peerConnection.setLocalDescription(answer);
                     ws.send(JSON.stringify({
                         type: 'webrtc',
@@ -334,12 +509,10 @@
                     break;
 
                 case 'answer':
-                    console.log('收到应答:', signal.answer);
                     await peerConnection.setRemoteDescription(new RTCSessionDescription(signal.answer));
                     break;
 
                 case 'ice-candidate':
-                    console.log('收到ICE候选:', signal.candidate);
                     if (peerConnection) {
                         await peerConnection.addIceCandidate(new RTCIceCandidate(signal.candidate));
                     }
@@ -684,36 +857,8 @@
         style.textContent = `
             #mousepad {
                 position: relative;
-                border: 2px solid #ccc;
-                background: rgba(245, 245, 245, 0.8);
                 margin: 20px auto;
                 cursor: crosshair;
-            }
-
-            #cursor {
-                width: 16px;
-                height: 16px;
-                background: red;
-                border-radius: 50%;
-                position: absolute;
-                transform: translate(-50%, -50%);
-                pointer-events: none;
-                z-index: 1000;
-            }
-
-            .sharing #mousepad {
-                position: absolute;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                z-index: 100;
-                background: transparent;
-                border: none;
-            }
-
-            .sharing #cursor {
-                background: rgba(255, 0, 0, 0.5);
-                border: 2px solid red;
             }
         `;
         document.head.appendChild(style);
