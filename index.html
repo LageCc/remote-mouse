@@ -25,9 +25,6 @@
         /* 视频容器样式 */
         .video-container {
             position: relative;
-            width: 800px;
-            height: 600px;
-            margin: 20px auto;
             background: #000;
             overflow: hidden;
         }
@@ -61,16 +58,6 @@
             user-select: none;
             background: transparent;
             touch-action: none;
-        }
-
-        #cursor {
-            width: 10px;
-            height: 10px;
-            background: red;
-            position: absolute;
-            border-radius: 50%;
-            pointer-events: none;
-            z-index: 11;
         }
 
         #clickBtn {
@@ -147,7 +134,6 @@
                 <video id="screenVideo" autoplay></video>
                 <div class="control-layer">
                     <div id="mousepad">
-                        <div id="cursor"></div>
                     </div>
                 </div>
             </div>
@@ -421,10 +407,6 @@
                             background: #000 !important;
                             position: relative !important;
                             overflow: hidden !important;
-                        }
-                        #screenVideo {
-                            position: absolute !important;
-                            object-fit: contain !important;
                         }
                     `;
                     document.head.appendChild(style);
@@ -705,7 +687,6 @@
         });
 
         const mousepad = document.getElementById('mousepad');
-        const cursor = document.getElementById('cursor');
         const clickBtn = document.getElementById('clickBtn');
         const status = document.getElementById('status');
 
@@ -715,8 +696,6 @@
             const normalizedX = Math.round((x - rect.left) / rect.width * 1920);
             const normalizedY = Math.round((y - rect.top) / rect.height * 1080);
 
-            cursor.style.left = `${x - rect.left}px`;
-            cursor.style.top = `${y - rect.top}px`;
 
             if (dataChannel && dataChannel.readyState === 'open') {
                 dataChannel.send(JSON.stringify({
@@ -783,6 +762,10 @@
         mousepad.addEventListener('mousemove', (e) => {
             if (isTouching) return; // 如果正在触摸，忽略鼠标移动
             handlePointerMove(e.clientX, e.clientY);
+        });
+
+        mousepad.addEventListener('click', () => {
+            handleClick();
         });
 
         clickBtn.addEventListener('click', () => {
@@ -859,6 +842,8 @@
                 position: relative;
                 margin: 20px auto;
                 cursor: crosshair;
+                width: 100%;
+                height: 100%;
             }
         `;
         document.head.appendChild(style);

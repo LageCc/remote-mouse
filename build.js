@@ -8,9 +8,7 @@ const arch = process.arch;
 
 // 定义支持的架构
 const SUPPORTED_ARCHS = {
-    win32: ['x64', 'x86', 'arm64'],
-    darwin: ['x64', 'arm64'],
-    linux: ['x64', 'arm64']
+    darwin: ['arm64'],
 };
 
 // 获取当前平台支持的所有架构
