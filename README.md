@@ -14,7 +14,7 @@
 
 ## 系统要求
 
-- 现代浏览器（Chrome、Firefox、Edge等）
+- 浏览器（Chrome、Firefox、Edge等）
 - 支持 WebRTC 和 WebSocket
 
 ## 使用说明
